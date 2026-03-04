@@ -1,0 +1,3 @@
+[submodule "scripts/sac"]
+	path = scripts/sac
+	url = git@github.com:ArjunBadyal/lehome-scripts.git

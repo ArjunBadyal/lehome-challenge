@@ -52,6 +52,12 @@ We offer two installation methods: UV and Docker for submission and local evalua
 
 The simulation environment is based on the IssacLab and LeRobot repositories; please refer to [UV installation guide](docs/installation.md).
 
+If you are using the private SAC RL scripts, initialize submodules after cloning:
+
+```bash
+git submodule update --init --recursive
+```
+
 #### Use Docker
 
 The simulation environment is based on the IssacLab and LeRobot repositories; please refer to [Docker installation guide](docs/docker_installation.md).

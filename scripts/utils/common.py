@@ -71,9 +71,15 @@ def launch_app_from_args(args: argparse.Namespace) -> SimulationApp:
     Returns:
         SimulationApp instance.
     """
-    args.kit_args = (
+    base_kit_args = (
         "--/log/level=error --/log/fileLogLevel=error --/log/outputStreamLevel=error"
     )
+    # Avoid false-positive "Kit appears to be hanging" during long startup/data-loading phases.
+    if bool(getattr(args, "headless", False)):
+        hang_args = " --/app/hangDetector/enabled=false"
+    else:
+        hang_args = " --/app/hangDetector/timeout=600"
+    args.kit_args = f"{base_kit_args}{hang_args}"
     app_launcher = AppLauncher(vars(args))
     simulation_app = app_launcher.app
     return simulation_app
@@ -133,7 +139,11 @@ def stabilize_garment_after_reset(
     else:
         home_action = torch.from_numpy(home_joints).float().to(env.device).unsqueeze(0)
 
+    is_headless = bool(getattr(args, "headless", False))
+
     for step_idx in range(num_steps):
         env.step(home_action)
-        if (step_idx + 1) % 10 == 0 or step_idx == num_steps - 1:
+        if not is_headless and (
+            (step_idx + 1) % 10 == 0 or step_idx == num_steps - 1
+        ):
             env.render()

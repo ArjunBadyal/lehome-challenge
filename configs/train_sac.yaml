@@ -1,0 +1,78 @@
+# SAC training configuration for LeHome garment manipulation
+
+# environment
+state_dim: 12
+action_dim: 12
+image_size: 84
+camera_keys:
+  - observation.images.top_rgb
+  - observation.images.left_rgb
+  - observation.images.right_rgb
+
+# image encoder
+image_encoder_hidden_dim: 32
+spatial_num_features: 8
+latent_dim: 256
+
+# actor / critic MLP
+hidden_dims: [256, 256]
+
+# SAC hyperparameters
+gamma: 0.99
+tau: 0.005
+lr_actor: 3.0e-4
+lr_critic: 3.0e-4
+lr_alpha: 3.0e-4
+init_alpha: 0.1
+target_entropy: -12.0
+
+# training
+batch_size: 256
+seed_steps: 5000
+total_steps: 1000000
+utd_ratio: 1
+log_interval: 1000
+eval_interval: 10000
+save_interval: 50000
+
+# RLPD demo/online mixing
+demo_ratio: 0.5
+online_buffer_capacity: 100000
+demo_buffer_capacity: 100000
+
+# dataset (for loading demonstrations)
+dataset_root: Datasets/example/top_long_merged
+
+# action scaling (min/max from dataset stats.json)
+action_low:
+  - -0.9876
+  - -1.7453
+  - -1.7276
+  - 0.1951
+  - -1.4444
+  - -0.1745
+  - -1.2230
+  - -1.7453
+  - -1.7289
+  - 0.4016
+  - -0.0623
+  - -0.1745
+action_high:
+  - 1.2505
+  - 1.3992
+  - 1.5546
+  - 1.6566
+  - 0.1310
+  - 1.2282
+  - 0.8393
+  - 1.2694
+  - 1.5663
+  - 1.6581
+  - 1.2051
+  - 0.9174
+
+# misc
+device: cuda
+seed: 42
+output_dir: outputs/train/sac
+garment_type: top_long
