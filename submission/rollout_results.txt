@@ -1,0 +1,114 @@
+=== LeHome Challenge Rollout Results ===
+
+Policy: v7 packaged static router + per-category ACT specialists + category-aware stabilizer
+Eval protocol: --max_steps 600 --num_episodes 5 --enable_cameras --device cpu --headless
+Generated from exact packaged-policy eval logs on 2026-04-29/2026-04-30
+
+Official-protocol category evals run 12 garments/category x 5 episodes = 60
+episodes per category. Overall estimate averages the four category success
+rates (240 total episodes).
+
+----- Final packaged stack -----
+
+Top-Short:
+    Specialist: outputs/train/act_top_short_aug/checkpoints/055000/pretrained_model
+    Stabilizer: rate-limit only
+    Eval log: /tmp/submission_bundle_top_short.log
+    Success rate: 50.00% (30/60)
+        Top_Short_Seen_0:   100.00%
+        Top_Short_Seen_1:    40.00%
+        Top_Short_Seen_2:    40.00%
+        Top_Short_Seen_3:   100.00%
+        Top_Short_Seen_4:    40.00%
+        Top_Short_Seen_5:    40.00%
+        Top_Short_Seen_6:    60.00%
+        Top_Short_Seen_7:    80.00%
+        Top_Short_Seen_8:    60.00%
+        Top_Short_Seen_9:     0.00%
+        Top_Short_Unseen_0:   0.00%
+        Top_Short_Unseen_1:  40.00%
+
+Top-Long:
+    Specialist: outputs/train/act_top_long_aug/checkpoints/090000/pretrained_model
+    Stabilizer: delayed release + rate-limit
+    Eval log: /tmp/submission_bundle_top_long.log
+    Success rate: 68.33% (41/60)
+        Top_Long_Seen_0:   100.00%
+        Top_Long_Seen_1:   100.00%
+        Top_Long_Seen_2:    80.00%
+        Top_Long_Seen_3:    80.00%
+        Top_Long_Seen_4:    80.00%
+        Top_Long_Seen_5:    60.00%
+        Top_Long_Seen_6:    60.00%
+        Top_Long_Seen_7:    40.00%
+        Top_Long_Seen_8:    40.00%
+        Top_Long_Seen_9:    40.00%
+        Top_Long_Unseen_0:  80.00%
+        Top_Long_Unseen_1:  60.00%
+
+Pant-Long:
+    Specialist: outputs/train/act_pant_long_balanced_weak_tiny/checkpoints/090250/pretrained_model
+    Stabilizer: rate-only winner variant (arm scale 0.90, gripper scale 1.30)
+    Eval log: /tmp/submission_bundle_pant_long.log
+    Success rate: 55.00% (33/60)
+        Pant_Long_Seen_0:    60.00%
+        Pant_Long_Seen_1:    40.00%
+        Pant_Long_Seen_2:    60.00%
+        Pant_Long_Seen_3:    60.00%
+        Pant_Long_Seen_4:    60.00%
+        Pant_Long_Seen_5:    80.00%
+        Pant_Long_Seen_6:   100.00%
+        Pant_Long_Seen_7:    80.00%
+        Pant_Long_Seen_8:    20.00%
+        Pant_Long_Seen_9:    20.00%
+        Pant_Long_Unseen_0:  60.00%
+        Pant_Long_Unseen_1:  20.00%
+
+Pant-Short:
+    Specialist: outputs/train/act_pant_short_aug/checkpoints/060000/pretrained_model
+    Stabilizer: delayed release + rate-limit
+    Eval log: /tmp/submission_bundle_pant_short.log
+    Success rate: 81.67% (49/60)
+        Pant_Short_Seen_0:    60.00%
+        Pant_Short_Seen_1:   100.00%
+        Pant_Short_Seen_2:   100.00%
+        Pant_Short_Seen_3:    80.00%
+        Pant_Short_Seen_4:   100.00%
+        Pant_Short_Seen_5:   100.00%
+        Pant_Short_Seen_6:    80.00%
+        Pant_Short_Seen_7:   100.00%
+        Pant_Short_Seen_8:   100.00%
+        Pant_Short_Seen_9:   100.00%
+        Pant_Short_Unseen_0:   0.00%
+        Pant_Short_Unseen_1:  60.00%
+
+----- Overall -----
+
+Top-Short  30/60
+Top-Long   41/60
+Pant-Long  33/60
+Pant-Short 49/60
+
+Total: 153/240 = 63.75%
+
+----- Discarded / diagnostic alternatives -----
+
+Fine-tunes from earlier harvested demos were not shipped:
+    Top-Short mixed10p_058000: 46.67% (/tmp/full_eval_top_short_mixed10p_058000.log)
+    Pant-Long mixed10p_090500: 55.00% (/tmp/full_eval_pant_long_mixed10p_090500.log)
+
+Pant-Short kNN portfolio was not shipped:
+    v5 portfolio: 73.33% (/tmp/router_v5_5ep_pant_short.log)
+    static aug60: 81.67% (/tmp/stabilized_router_pant_short_aug60.log)
+
+Pant-Long alternatives:
+    v6 aug90 packaged winner rerun: 50.00% (/tmp/submission_bundle_pant_long_pantstab_winner.log)
+    v7 balanced-weak 090250 direct checkpoint diagnostic: 63.33% (/tmp/full_eval_pant_long_balanced_weak_090250.log)
+    v7 balanced-weak 090250 packaged raw mode: 55.00% (/tmp/submission_bundle_pant_long_pantstab_raw.log)
+    v7 balanced-weak 090250 packaged winner mode: 55.00% (/tmp/submission_bundle_pant_long.log) — shipped
+
+Protocol compliance note:
+    Inference uses only the public observation dictionary received by /infer:
+    observation.state and RGB/depth images. It does not read simulator garment
+    labels, check_point particle coordinates, success metrics, condition
+    margins, reward, or other internal task state.

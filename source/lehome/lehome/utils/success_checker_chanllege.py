@@ -35,12 +35,53 @@ def calculate_distance(point_a, point_b):
     return np.linalg.norm(point_a - point_b)
 
 
-def get_object_particle_position(particle_object, index_list):
+def _build_dedup_mapping(particle_object):
+    """Build a mapping from USD vertex indices to deduplicated particle indices.
+
+    PhysX cloth deduplicates coincident vertices when creating the particle system,
+    so a USD mesh with N vertices may become M < N particles. check_point indices
+    in the garment JSON reference the ORIGINAL (pre-dedup) USD indexing, which
+    means they can point past the end of the particle array. This function reads
+    the USD mesh's "points" attribute directly (which preserves all vertices),
+    computes the first-occurrence dedup mapping, and returns it as an int array
+    `mapping[old_idx] -> new_idx`.
+
+    The mapping is deterministic and depends only on the rest-pose USD points,
+    so it is computed once and cached on the particle_object.
+    """
+    cached = getattr(particle_object, "_dedup_mapping", None)
+    if cached is not None:
+        return cached
     try:
-        transformed_mesh_points, _, _, _ = particle_object.get_current_mesh_points()
-    except Exception as e1:
+        pts_attr = particle_object._prim.GetAttribute("points").Get()
+        pts = np.asarray(pts_attr, dtype=np.float32)
+    except Exception as e:
+        logger.error(f"Could not read USD points for dedup mapping: {e}")
+        particle_object._dedup_mapping = None
+        return None
+    # First-occurrence dedup (matches PhysX cloth behavior)
+    seen = {}
+    mapping = np.empty(len(pts), dtype=np.int64)
+    for old_idx in range(len(pts)):
+        key = pts[old_idx].tobytes()
+        if key not in seen:
+            seen[key] = len(seen)
+        mapping[old_idx] = seen[key]
+    particle_object._dedup_mapping = mapping
+    return mapping
+
+
+def get_object_particle_position(particle_object, index_list):
+    transformed_mesh_points = None
+    max_idx = max(index_list) if index_list else 0
+    try:
+        pts, _, _, _ = particle_object.get_current_mesh_points()
+        if pts.shape[0] > max_idx:
+            transformed_mesh_points = pts
+    except Exception:
+        pass
+    if transformed_mesh_points is None:
         try:
-            logger.error(f"Error in get_object_particle_position: {e1}")
             transformed_mesh_points = (
                 particle_object._cloth_prim_view.get_world_positions()
                 .squeeze(0)
@@ -48,10 +89,25 @@ def get_object_particle_position(particle_object, index_list):
                 .cpu()
                 .numpy()
             )
-        except Exception as e2:
-            logger.error(f"Error in get_object_particle_position: {e2}")
+        except Exception as e:
+            logger.error(f"Error in get_object_particle_position: {e}")
             return
-    positions = (transformed_mesh_points[index_list] * 100).tolist()
+    effective_indices = index_list
+    if transformed_mesh_points.shape[0] <= max_idx:
+        # USD check_points reference the pre-dedup mesh; remap them.
+        mapping = _build_dedup_mapping(particle_object)
+        if mapping is None:
+            return
+        effective_indices = [int(mapping[i]) for i in index_list]
+        if max(effective_indices) >= transformed_mesh_points.shape[0]:
+            if not getattr(get_object_particle_position, "_warned_oob", False):
+                logger.warning(
+                    f"check_points still OOB after dedup remap "
+                    f"(max {max(effective_indices)} >= {transformed_mesh_points.shape[0]})"
+                )
+                get_object_particle_position._warned_oob = True
+            return
+    positions = (transformed_mesh_points[effective_indices] * 100).tolist()
     return positions
 
 
@@ -197,6 +253,8 @@ def success_checker_garment_fold(particle_object, garment_type: str):
     current_scale = float(particle_object.init_scale[0])
     success_distance = [d * current_scale for d in raw_success_distance]
     p = get_object_particle_position(particle_object, check_point_indices)
+    if p is None:
+        return {"success": False, "garment_type": garment_type, "thresholds": success_distance, "details": {}}
 
     if garment_type == "top-long-sleeve" or garment_type == "top-short-sleeve":
         success, details = check_top_sleeve(p, success_distance)

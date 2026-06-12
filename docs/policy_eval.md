@@ -1,6 +1,6 @@
 # Policy Evaluation Guide
 
-We provide both LeRobot policy formats and custom policy formats.
+We provide LeRobot policy formats, the built-in SAC baseline format, and custom policy formats.
 
 ---
 
@@ -25,6 +25,26 @@ python -m scripts.eval \
 - `pretrained_model` directory with config files
 - Training dataset metadata (for `--dataset_root`)
 - For VLA models: add `--task_description "fold the garment on the table"`
+
+---
+
+## Using SAC Policies
+
+Evaluate a SAC checkpoint trained with `scripts/train_sac.py`:
+
+```bash
+python -m scripts.eval \
+    --policy_type sac \
+    --policy_path outputs/rl/sac/LeHome-BiSO101-Direct-Garment-SAC-v0/<run_dir>/model.pt \
+    --garment_type "top_long" \
+    --num_episodes 5 \
+    --enable_cameras \
+    --device cpu
+```
+
+**Requirements:**
+- `model.pt` checkpoint produced by the SAC trainer
+- A task-compatible checkpoint trained on the official `observation.state -> action` interface
 
 ---
 

@@ -71,3 +71,16 @@ tests/
 
 # Docker history
 .isaac-lab-docker-history
+
+# LeHome submission — large binaries (kept out of git)
+submission/lehome-submission-*.tar.gz
+submission/policies/
+LehomeYorbotSubmission/
+golden_checkpoints/
+Datasets/
+.session_state/
+.codex
+config/
+
+# Editor/agent local state
+.claude/

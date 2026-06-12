@@ -18,6 +18,22 @@ def main():
     parser = setup_eval_parser()
     AppLauncher.add_app_launcher_args(parser)
     args = parser.parse_args()
+    # The LeHome challenge explicitly requires CPU simulation. Running on cuda
+    # causes a physics-rendering desync: DOF positions change but articulation
+    # bodies don't move, the robot arms visually freeze at home, and success
+    # rate collapses to ~0%. See README: "the simulation currently only
+    # supports CPU devices".
+    if getattr(args, "device", "cpu") != "cpu":
+        import sys
+        logger.error(
+            f"\n{'='*72}\n"
+            f"REFUSING TO RUN with --device={args.device!r}.\n"
+            f"The LeHome simulation requires --device cpu. Running on cuda\n"
+            f"silently breaks articulation physics and scores ~0%.\n"
+            f"Re-run with: --device cpu\n"
+            f"{'='*72}"
+        )
+        sys.exit(2)
     simulation_app = launch_app_from_args(args)
     try:
         import lehome.tasks.bedroom

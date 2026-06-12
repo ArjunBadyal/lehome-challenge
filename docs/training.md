@@ -384,3 +384,50 @@ For specific questions about custom policy integration with the LeHome environme
 - [LeRobot Official Documentation](https://huggingface.co/docs/lerobot)
 - [Competition Website](https://lehome-challenge.com/)
 
+---
+
+## 4. SAC Reinforcement Learning
+
+For a low-dimensional reinforcement learning baseline, the repository now includes a dedicated SAC training entrypoint for the garment folding environment:
+
+```bash
+./third_party/IsaacLab/isaaclab.sh -p scripts/train_sac.py \
+  --task LeHome-BiSO101-Direct-Garment-SAC-v0 \
+  --garment_name Top_Long_Seen_0 \
+  --garment_version Release \
+  --device cpu \
+  --rl_device cuda:0
+```
+
+Key details:
+- The submission-safe SAC task uses only `observation.state` as the policy input, so the trained policy can run through the standard evaluation interface.
+- Actions use the official absolute joint-target format, bounded by the robot joint limits.
+- The reward is still denser than the default challenge reward and includes fold progress, condition satisfaction, smoothness penalties, and a terminal success bonus.
+
+### TensorBoard
+
+SAC writes TensorBoard event files during training. Point TensorBoard at the SAC log root:
+
+```bash
+tensorboard --logdir outputs/rl/sac
+```
+
+During startup, the trainer prints the exact run directory. Inside each run you will find:
+- `params/env.yaml` and `params/agent.yaml` with the resolved configs
+- TensorBoard logs under the run directory
+- additional custom reward metrics under `custom_metrics/`
+- model checkpoints as `.pt` files, including `model.pt` for evaluation/submission
+
+### Evaluate a Trained SAC Policy
+
+Once training finishes, you can run the trained model through the normal evaluation framework:
+
+```bash
+python -m scripts.eval \
+  --policy_type sac \
+  --policy_path outputs/rl/sac/LeHome-BiSO101-Direct-Garment-SAC-v0/<run_dir>/model.pt \
+  --garment_type top_long \
+  --num_episodes 2 \
+  --enable_cameras \
+  --device cpu
+```

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from collections import deque
 from typing import Any, Dict, List
 from collections.abc import Sequence
 
@@ -41,6 +42,14 @@ class GarmentEnv(DirectRLEnv):
 
         # Cache for distance-based reward (to handle step_interval decorator)
         self._last_computed_reward = 0.0
+        # State for potential-based reward shaping:
+        # Keep the previous step's sigmoid-potentials over margins so we can
+        # return reward = alpha * delta(min_phi) + beta * sum(delta_phi_i)
+        # plus explicit release and asymmetry penalties.
+        self._prev_phis: list[float] | None = None
+        self._prev_min_phi: float | None = None
+        # Gripper action from the previous step — used for release-penalty.
+        self._prev_gripper_action = None
 
         self.garment_loader = ChallengeGarmentLoader(cfg.garment_cfg_base_path)
         self.garment_config = self.garment_loader.load_garment_config(
@@ -268,6 +277,13 @@ class GarmentEnv(DirectRLEnv):
         self.left_arm.set_joint_position_target(self.actions[:, :6])
         self.right_arm.set_joint_position_target(self.actions[:, 6:])
 
+    def _get_joint_position_tensor(self) -> torch.Tensor:
+        """Concatenated (left 6 + right 6) joint positions. Used by residual RL."""
+        return torch.cat(
+            [self.left_arm.data.joint_pos[:, :6], self.right_arm.data.joint_pos[:, :6]],
+            dim=-1,
+        )
+
     def _get_observations(self) -> dict:
         action = self.actions.squeeze(0)
         left_joint_pos = torch.cat(
@@ -344,126 +360,139 @@ class GarmentEnv(DirectRLEnv):
         return pointclouds
 
     def _get_rewards(self) -> torch.Tensor:
-        """Calculate distance-based reward for garment folding task.
+        """Potential-based shaped reward for residual RL fine-tuning.
 
-        Reward Components:
-        1. Distance-based reward: Encourages getting closer to target distances
-        2. Success bonus: Large reward when all conditions are met
-        3. Progress reward: Partial credit for meeting some conditions
+        R_step = alpha * (phi(min_m_t) - phi(min_m_{t-1}))        # push on worst blocker
+               + beta  * sum_i w_i * (phi(m_i_t) - phi(m_i_{t-1})) # rewards overall progress
+               - gamma * release_penalty                           # opening gripper mid-fold
+               - eta   * asymmetry_penalty                         # pair-imbalance (pants)
 
-        Returns:
-            torch.Tensor: Reward value (0.0 to 1.0+)
+        where:
+          m_i     = signed margin of condition i (positive = satisfied, cm)
+          phi(m)  = sigmoid(m / tau), tau = 1 cm
+          alpha = 1.0, beta = 0.25, gamma = 0.05, eta = 0.05
+
+        Because the reward is the DELTA of a potential function, the optimal
+        policy is invariant to this shaping (Ng & Russell 1999), so an RL
+        agent can't hack the reward by cycling through high-potential states
+        without actually reducing the worst-margin. Success still returns
+        a sparse +1.0 bonus that dominates.
         """
-        # ========== Original Simple Reward (Sparse) ==========
-        # Uncomment below to use simple binary reward (0 or 1)
-        # success = self._check_success()
-        # if success:
-        #     total_reward = 1
-        # else:
-        #     total_reward = 0
-        # return total_reward
-        # =====================================================
-
-        # ========== Distance-Based Reward (Dense) ==========
         # Check if object is valid
         if self.object is None:
             return 0.0
         if not hasattr(self.object, "_cloth_prim_view"):
             return 0.0
 
-        # Get detailed success check result
         garment_type = self.garment_loader.get_garment_type(self.cfg.garment_name)
         result = success_checker_garment_fold(self.object, garment_type)
 
-        # Handle step_interval decorator returning False
+        # step_interval decorator may return False on skipped ticks
         if not isinstance(result, dict):
-            # Return cached reward from last computation (maintains reward continuity)
             return self._last_computed_reward
 
-        # Extract details
         success = result.get("success", False)
         details = result.get("details", {})
 
-        # If success, return maximum reward
         if success:
+            # Sparse success bonus — always dominates the shaping.
             self._last_computed_reward = 1.0
             return 1.0
 
-        # Calculate distance-based reward
-        total_reward = 0.0
-        num_conditions = len(details)
-
-        if num_conditions == 0:
+        if not details:
             return 0.0
 
-        # Calculate weighted reward based on condition type
-        # Primary conditions (<=): folding-related, higher weight
-        # Secondary conditions (>=): shape constraints, lower weight
-        primary_rewards = []
-        secondary_rewards = []
+        # Shaping constants
+        tau = 1.0       # centimetres — conditions use cm units already
+        alpha = 1.0     # weight on worst-margin delta
+        beta = 0.25     # weight on per-condition delta sum
+        gamma = 0.05    # weight on release penalty
+        eta = 0.05      # weight on asymmetry penalty
 
-        for cond_key, cond_info in details.items():
-            value = cond_info.get("value", 0.0)
-            threshold = cond_info.get("threshold", 0.0)
-            passed = cond_info.get("passed", False)
+        def _phi(m: float) -> float:
+            # sigmoid with tau scaling
+            if m >= 20.0:  # avoid overflow
+                return 1.0
+            if m <= -20.0:
+                return 0.0
+            return 1.0 / (1.0 + np.exp(-m / tau))
 
-            description = cond_info.get("description", "")
+        # Compute signed margins and per-condition potentials.
+        margins: list[float] = []
+        pair_left_margin: float | None = None
+        pair_right_margin: float | None = None
+
+        for cond_info in details.values():
+            value = float(cond_info.get("value", 0.0))
+            threshold = float(cond_info.get("threshold", 0.0))
+            description = str(cond_info.get("description", ""))
             is_less_than = "<=" in description
 
-            if passed:
-                condition_reward = 1.0
-            else:
-                if is_less_than:
-                    # Primary folding conditions: steep penalty when far from target
-                    if threshold > 0:
-                        excess_ratio = max(0.0, (value - threshold) / threshold)
-                        # Steeper decay for primary conditions
-                        condition_reward = np.exp(-3.0 * excess_ratio)
-                    else:
-                        condition_reward = 0.0
-                else:
-                    # Secondary shape constraints: gentler reward curve
-                    if threshold > 0:
-                        ratio = value / threshold
-                        # Less aggressive growth for secondary conditions
-                        condition_reward = max(0.0, 1.0 - np.exp(-1.5 * (1.0 - ratio)))
-                    else:
-                        condition_reward = 0.0
-
             if is_less_than:
-                primary_rewards.append(condition_reward)
+                margin = threshold - value  # positive when within
             else:
-                secondary_rewards.append(condition_reward)
+                margin = value - threshold
 
-        # Weighted combination: primary conditions dominate
-        # Only give significant reward when primary conditions are mostly satisfied
-        num_primary = len(primary_rewards)
-        num_secondary = len(secondary_rewards)
+            margins.append(margin)
 
-        if num_primary > 0:
-            avg_primary = sum(primary_rewards) / num_primary
-            # Use geometric mean to heavily penalize if any primary condition is bad
-            min_primary = min(primary_rewards) if primary_rewards else 0.0
-            # Combine average and minimum to ensure all primary conditions matter
-            primary_score = (avg_primary**0.7) * (min_primary**0.3)
+            if "p[0], p[4]" in description:
+                pair_left_margin = margin
+            elif "p[1], p[5]" in description:
+                pair_right_margin = margin
+
+        if not margins:
+            return 0.0
+
+        phis = [_phi(m) for m in margins]
+        min_phi = min(phis)
+
+        # Potential-based shaping: reward is delta-of-potential since previous step.
+        if self._prev_phis is not None and len(self._prev_phis) == len(phis):
+            delta_min_phi = min_phi - (self._prev_min_phi or 0.0)
+            delta_sum_phi = sum(phis) - sum(self._prev_phis)
         else:
-            primary_score = 1.0
+            delta_min_phi = 0.0
+            delta_sum_phi = 0.0
+        self._prev_phis = phis
+        self._prev_min_phi = min_phi
 
-        if num_secondary > 0:
-            avg_secondary = sum(secondary_rewards) / num_secondary
-            secondary_score = avg_secondary
+        # Asymmetry penalty — only for garment categories that have both
+        # p[0]-p[4] and p[1]-p[5] pair conditions (all 4 supported types do).
+        if pair_left_margin is not None and pair_right_margin is not None:
+            asymmetry_penalty = abs(pair_left_margin - pair_right_margin)
         else:
-            secondary_score = 1.0
+            asymmetry_penalty = 0.0
 
-        # Final reward: primary conditions weighted heavily (80%), secondary (20%)
-        # Scale to [0, 0.9] to reserve 1.0 for success
-        final_reward = (0.8 * primary_score + 0.2 * secondary_score) * 0.9
+        # Release penalty — fires only when fold is clearly incomplete
+        # (min_phi < 0.5 means some condition is still on the "not satisfied"
+        # side of its threshold) AND the gripper is being commanded open.
+        release_penalty = 0.0
+        try:
+            current_actions = self.actions[0].detach().cpu().numpy()
+            if self._prev_gripper_action is not None:
+                gripper_delta_left = float(current_actions[5] - self._prev_gripper_action[0])
+                gripper_delta_right = float(current_actions[11] - self._prev_gripper_action[1])
+                opening = max(gripper_delta_left, gripper_delta_right)
+                if opening > 0.02 and min_phi < 0.5:
+                    release_penalty = 1.0
+            self._prev_gripper_action = (
+                float(current_actions[5]),
+                float(current_actions[11]),
+            )
+        except Exception:
+            # `self.actions` may not be initialised on the very first tick.
+            pass
 
-        # Cache the computed reward for non-check steps
-        self._last_computed_reward = float(final_reward)
-
-        return float(final_reward)
-        # ===================================================
+        total = (
+            alpha * delta_min_phi
+            + beta * delta_sum_phi
+            - gamma * release_penalty
+            - eta * asymmetry_penalty
+        )
+        # Bound the per-step shaping; success bonus is outside this path.
+        total = float(max(-1.0, min(1.0, total)))
+        self._last_computed_reward = total
+        return total
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
@@ -531,6 +560,9 @@ class GarmentEnv(DirectRLEnv):
 
         # Reset cached reward on episode reset
         self._last_computed_reward = 0.0
+        self._prev_phis = None
+        self._prev_min_phi = None
+        self._prev_gripper_action = None
 
         left_joint_pos = self.left_arm.data.default_joint_pos[env_ids]
         right_joint_pos = self.right_arm.data.default_joint_pos[env_ids]

@@ -57,6 +57,11 @@ class LeRobotPolicy(BasePolicy):
         # 2. Load Policy Config
         policy_cfg = PreTrainedConfig.from_pretrained(policy_path, cli_overrides={})
         policy_cfg.pretrained_path = policy_path
+        # Force the initial weight load to happen on self.device (e.g. cpu) rather
+        # than whatever device the checkpoint's train_config recorded (e.g. cuda).
+        # Without this, make_policy() loads the safetensors to cuda first, which
+        # OOMs if another process is using the GPU.
+        policy_cfg.device = str(self.device)
         
         # 3. Filter Metadata (Logic from original create_il_policy)
         # Identify features required by the policy

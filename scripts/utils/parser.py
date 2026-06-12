@@ -135,6 +135,312 @@ def setup_record_parser(
         help=" Description of the task to be performed.",
     )
     parser.add_argument(
+        "--assist_policy_type",
+        type=str,
+        default=None,
+        help="Optional policy type to run during recording before manual takeover.",
+    )
+    parser.add_argument(
+        "--assist_policy_path",
+        type=str,
+        default=None,
+        help="Policy checkpoint path for assisted recording.",
+    )
+    parser.add_argument(
+        "--assist_dataset_root",
+        type=str,
+        default=None,
+        help="Dataset root for assisted LeRobot policy metadata.",
+    )
+    parser.add_argument(
+        "--assist_policy_device",
+        type=str,
+        default="cuda",
+        help="Device for assisted policy inference (cuda or cpu).",
+    )
+    parser.add_argument(
+        "--enable_click_ik",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable assisted top-camera click-to-IK. In recording mode, press C/V "
+            "to pause ACT and latch grippers, then click the top-camera window to "
+            "move the nearest arm to that point."
+        ),
+    )
+    parser.add_argument(
+        "--scripted_oracle",
+        type=str,
+        default=None,
+        choices=["auto", "top_short", "pant_long"],
+        help=(
+            "If set, run a scripted check_point-based fold oracle as the action "
+            "source (replaces teleop and assist policy). 'auto' detects the "
+            "category from the loaded garment. Recording is automatic: successful "
+            "episodes are saved, failures are discarded and re-attempted."
+        ),
+    )
+    parser.add_argument(
+        "--click_ik_z_offset",
+        type=float,
+        default=0.05,
+        help="Meters to lift the clicked depth point for the gripper IK target.",
+    )
+    parser.add_argument(
+        "--click_ik_steps",
+        type=int,
+        default=45,
+        help="Number of sim steps used to interpolate each click-to-IK move.",
+    )
+    parser.add_argument(
+        "--ik_command_file",
+        type=str,
+        default="/tmp/lehome_ik_command.json",
+        help=(
+            "Optional live IK command JSON file polled by click-IK. "
+            "This enables soft-pause + external command control without relying on the OpenCV GUI."
+        ),
+    )
+    parser.add_argument(
+        "--ik_status_file",
+        type=str,
+        default="/tmp/lehome_ik_status.json",
+        help="Status JSON written after live IK commands are accepted or rejected.",
+    )
+    parser.add_argument(
+        "--visual_repair_grasp",
+        type=str,
+        default="top",
+        choices=["top", "bottom"],
+        help=(
+            "Landmark pair used by the E-key visual repair macro. "
+            "'top' grasps shoulder/collar-side landmarks; 'bottom' grasps hem/leg-side landmarks."
+        ),
+    )
+    parser.add_argument(
+        "--auto_visual_repair_step",
+        type=int,
+        default=-1,
+        help=(
+            "If >=0, auto-start recording and trigger the E-key visual repair macro "
+            "after this many episode steps. Useful for unattended repair-demo collection."
+        ),
+    )
+    parser.add_argument(
+        "--auto_visual_repair_attempts",
+        type=int,
+        default=3,
+        help=(
+            "Maximum number of closed-loop visual repair attempts per episode. "
+            "After each attempt settles, the success checker decides whether to save "
+            "or re-detect landmarks and try another repair."
+        ),
+    )
+    parser.add_argument(
+        "--auto_visual_repair_settle_steps",
+        type=int,
+        default=40,
+        help="Settling steps after a visual repair before deciding whether to retry.",
+    )
+    parser.add_argument(
+        "--visual_repair_debug_dir",
+        type=str,
+        default="/tmp/lehome_visual_repair_debug",
+        help="Directory for top-camera debug PNGs saved during visual repair.",
+    )
+    parser.add_argument(
+        "--visual_repair_debug_every",
+        type=int,
+        default=30,
+        help="Save one visual-repair debug PNG every N macro steps; <=0 disables.",
+    )
+    parser.add_argument(
+        "--auto_save_success",
+        action="store_true",
+        default=False,
+        help="Automatically save an episode once the task success checker passes.",
+    )
+    parser.add_argument(
+        "--auto_save_min_steps",
+        type=int,
+        default=120,
+        help="Minimum episode steps before --auto_save_success may mark success.",
+    )
+    parser.add_argument(
+        "--auto_save_success_settle_steps",
+        type=int,
+        default=0,
+        help=(
+            "Additional recording steps to wait after success and release gates "
+            "first pass before auto-saving. The success/release checks must "
+            "remain valid throughout this window; useful to let cloth land."
+        ),
+    )
+    parser.add_argument(
+        "--auto_save_require_release",
+        action="store_true",
+        default=False,
+        help=(
+            "When auto-saving successful rollouts, require both grippers to be "
+            "open and optionally clear of the cloth. Useful for harvesting "
+            "complete release/retract demonstrations instead of truncated folds."
+        ),
+    )
+    parser.add_argument(
+        "--auto_save_min_gripper_open",
+        type=float,
+        default=0.20,
+        help="Minimum gripper joint value considered released for --auto_save_require_release.",
+    )
+    parser.add_argument(
+        "--auto_save_min_gripper_cloth_distance",
+        type=float,
+        default=0.0,
+        help=(
+            "Minimum world-frame distance in meters from each gripper frame to "
+            "the cloth before auto-save. <=0 disables the clearance check."
+        ),
+    )
+    parser.add_argument(
+        "--auto_start_record",
+        action="store_true",
+        default=False,
+        help="Start recording automatically after the idle/stabilization phase.",
+    )
+    parser.add_argument(
+        "--auto_restart_fail_steps",
+        type=int,
+        default=-1,
+        help=(
+            "If >=0, automatically discard/restart an episode after this many "
+            "recording steps unless the success checker has already passed."
+        ),
+    )
+    parser.add_argument(
+        "--auto_save_near_miss",
+        action="store_true",
+        default=False,
+        help=(
+            "At score probes or --auto_restart_fail_steps, save a high-quality "
+            "near-miss instead of discarding it. Use only into a separate "
+            "weak/near-miss dataset."
+        ),
+    )
+    parser.add_argument(
+        "--auto_save_near_miss_min_passed",
+        type=int,
+        default=4,
+        help="Minimum success-check conditions that must pass for near-miss saving.",
+    )
+    parser.add_argument(
+        "--auto_save_near_miss_max_worst_close_ratio",
+        type=float,
+        default=1.10,
+        help=(
+            "Maximum worst ratio over <= success conditions for near-miss saving. "
+            "Example: 1.10 allows a close-distance miss up to 10%% over threshold."
+        ),
+    )
+    parser.add_argument(
+        "--auto_save_near_miss_require_release",
+        action="store_true",
+        default=False,
+        help="Require the same gripper release/clearance gate for near-miss saves.",
+    )
+    parser.add_argument(
+        "--max_attempts_per_episode",
+        type=int,
+        default=-1,
+        help=(
+            "If >0, abort the current recording run after this many failed "
+            "attempts for the same episode. Useful for unattended harvesters "
+            "so one hard garment/variant cannot run forever."
+        ),
+    )
+    parser.add_argument(
+        "--early_restart_schedule",
+        type=str,
+        default="",
+        help=(
+            "Comma-separated staged early-restart rules. Format per rule is "
+            "step:min_passed:best_close_ratio:min_close_passed. Empty fields "
+            "disable that check. Example: '160:2:2.8:,220:3::2' restarts "
+            "obvious misses at 160 and one-leg failures at 220."
+        ),
+    )
+    parser.add_argument(
+        "--auto_grip_hold_start_step",
+        type=int,
+        default=-1,
+        help=(
+            "If >=0, force both grippers closed starting at this recording step. "
+            "Used for ACT harvesting when the policy releases before the fold is complete."
+        ),
+    )
+    parser.add_argument(
+        "--auto_grip_hold_end_step",
+        type=int,
+        default=-1,
+        help="Recording step where the forced-closed gripper hold ends.",
+    )
+    parser.add_argument(
+        "--auto_grip_release_until_step",
+        type=int,
+        default=-1,
+        help=(
+            "If > auto_grip_hold_end_step, force both grippers open from hold_end "
+            "until this recording step, giving the episode an explicit release phase."
+        ),
+    )
+    parser.add_argument(
+        "--score_probe_steps",
+        type=str,
+        default="",
+        help=(
+            "Comma-separated recording steps at which to log raw cloth checkpoint "
+            "positions/distances for later success-vs-failure comparison."
+        ),
+    )
+    parser.add_argument(
+        "--score_probe_log",
+        type=str,
+        default="",
+        help="JSONL path for --score_probe_steps and terminal save/restart scores.",
+    )
+    parser.add_argument(
+        "--early_restart_step",
+        type=int,
+        default=-1,
+        help=(
+            "If >=0, evaluate progress at this step and restart early when the "
+            "fold is clearly hopeless."
+        ),
+    )
+    parser.add_argument(
+        "--early_restart_close_ratio",
+        type=float,
+        default=3.0,
+        help=(
+            "For <= success conditions, restart early if the best closing-condition "
+            "ratio value/threshold is still above this value."
+        ),
+    )
+    parser.add_argument(
+        "--early_restart_min_passed",
+        type=int,
+        default=0,
+        help="Minimum number of success-check conditions that must pass by early_restart_step.",
+    )
+    parser.add_argument(
+        "--safe_assist_hotkeys",
+        action="store_true",
+        default=False,
+        help=(
+            "Disable destructive/manual assist hotkeys (N/D/X/M/E/G) while keeping "
+            "S/P/R/C/V/Z/ESC. Useful for ACT-assisted recording with auto-save."
+        ),
+    )
+    parser.add_argument(
         "--record_ee_pose",
         action="store_true",
         default=False,
@@ -431,6 +737,12 @@ def setup_eval_parser() -> argparse.ArgumentParser:
         help="Directory to save evaluation videos.",
     )
     parser.add_argument(
+        "--trajectory_log_dir",
+        type=str,
+        default=None,
+        help="If set, write per-step trajectory CSV (state, action, reward, success) to this dir.",
+    )
+    parser.add_argument(
         "--save_datasets",
         action="store_true",
         help="If set, save evaluation episodes dataset(only success).",
@@ -441,6 +753,15 @@ def setup_eval_parser() -> argparse.ArgumentParser:
         default="Datasets/eval",
         help="Path to save evaluation datasets.",
     )
+    parser.add_argument(
+        "--eval_list_override",
+        type=str,
+        default=None,
+        help=(
+            "Path to a .txt file listing garment names (one per line) to evaluate. "
+            "Overrides the default per-category list; used for sweep mini-suites."
+        ),
+    )
 
     # Policy arguments for Imitation Learning (IL)
     # Note: Available policy types are dynamically loaded from PolicyRegistry
@@ -450,7 +771,7 @@ def setup_eval_parser() -> argparse.ArgumentParser:
         default="lerobot",
         help=(
             "Type of policy to use. Available policies are registered in PolicyRegistry. "
-            "Built-in options: 'lerobot', 'custom'. "
+            "Built-in options: 'lerobot', 'sac', 'custom'. "
             "Participants can register their own policies using @PolicyRegistry.register('my_policy')."
         ),
     )
@@ -475,6 +796,13 @@ def setup_eval_parser() -> argparse.ArgumentParser:
         type=str,
         default="Assets/robots/so101_new_calib.urdf",
         help="URDF path for IK solver (required when --use_ee_pose is set).",
+    )
+    parser.add_argument(
+        "--replan_interval",
+        type=int,
+        default=0,
+        help="Force ACT to re-plan every N steps (0 = use default chunk). "
+             "Shorter intervals give tighter closed-loop control for deformable tasks.",
     )
 
     return parser

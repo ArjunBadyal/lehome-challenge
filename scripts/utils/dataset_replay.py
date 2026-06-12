@@ -434,6 +434,7 @@ def replay_episode(
             # If saving, record observations
             if replay_dataset is not None:
                 observations = env._get_observations()
+                observations.pop("policy", None)
 
                 # Remove depth if disabled
                 if disable_depth and "observation.top_depth" in observations:

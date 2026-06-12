@@ -1,4 +1,5 @@
 import os
+import csv
 import argparse
 import gymnasium as gym
 import torch
@@ -118,6 +119,29 @@ def run_evaluation_loop(
             else {}
         )
 
+        # Prepare per-episode trajectory CSV (if enabled)
+        traj_writer = None
+        traj_file = None
+        if getattr(args, "trajectory_log_dir", None):
+            os.makedirs(args.trajectory_log_dir, exist_ok=True)
+            gname = garment_name or "unknown"
+            traj_path = os.path.join(
+                args.trajectory_log_dir, f"{gname}_episode{i}.csv"
+            )
+            traj_file = open(traj_path, "w", newline="")
+            traj_writer = csv.writer(traj_file)
+            # Header: infer action/state dim from first obs
+            state0 = observation_dict.get("observation.state")
+            state_dim = int(state0.shape[-1]) if state0 is not None else 12
+            header = (
+                ["garment", "episode", "step"]
+                + [f"state_{k}" for k in range(state_dim)]
+                + [f"action_{k}" for k in range(state_dim)]
+                + [f"delta_{k}" for k in range(state_dim)]
+                + ["reward", "success"]
+            )
+            traj_writer.writerow(header)
+
         episode_return = 0.0
         episode_length = 0
         extra_steps = 0
@@ -127,6 +151,11 @@ def run_evaluation_loop(
         for st in range(args.max_steps):
             if rate_limiter:
                 rate_limiter.sleep(env)
+
+            # Force re-plan if short-horizon replanning is enabled
+            replan = getattr(args, "replan_interval", 0)
+            if replan > 0 and st > 0 and st % replan == 0:
+                policy.reset()
 
             # 3. Policy Inference (The core abstraction)
             # Input: Numpy Dict -> Output: Numpy Array
@@ -176,6 +205,23 @@ def run_evaluation_loop(
             if not success_flag:
                 episode_length += 1
 
+            # Trajectory log: capture state BEFORE stepping forward so it aligns
+            # with the action. observation_dict here is still the pre-step obs.
+            if traj_writer is not None:
+                state_vec = observation_dict.get("observation.state")
+                if state_vec is not None:
+                    state_np = np.asarray(state_vec).reshape(-1).astype(float)
+                    action_flat = np.asarray(action_np).reshape(-1).astype(float)
+                    n = min(state_np.size, action_flat.size)
+                    delta = action_flat[:n] - state_np[:n]
+                    traj_writer.writerow(
+                        [garment_name or "unknown", i, st]
+                        + state_np[:n].tolist()
+                        + action_flat[:n].tolist()
+                        + delta.tolist()
+                        + [float(reward), bool(success_flag)]
+                    )
+
             # Update Observation
             observation_dict = env._get_observations()
 
@@ -184,7 +230,7 @@ def run_evaluation_loop(
                 frame = {
                     k: v
                     for k, v in observation_dict.items()
-                    if k != "observation.top_depth"
+                    if k not in {"observation.top_depth", "policy"}
                 }
                 frame["task"] = args.task_description
                 eval_dataset.add_frame(frame)
@@ -201,6 +247,10 @@ def run_evaluation_loop(
 
         # --- End of Episode Handling ---
         is_success = success.item() if success_flag else False
+
+        # Close trajectory log
+        if traj_file is not None:
+            traj_file.close()
 
         # Save Datasets
         if args.save_datasets:
@@ -223,6 +273,7 @@ def run_evaluation_loop(
                 success=success if success_flag else torch.tensor(False),
                 save_dir=args.video_dir,
                 episode_idx=i,
+                garment_name=garment_name,
             )
 
         # Log Metrics
@@ -232,6 +283,12 @@ def run_evaluation_loop(
         logger.info(
             f"Episode {i + 1}/{args.num_episodes}: Return={episode_return:.2f}, Length={episode_length}, Success={is_success}"
         )
+
+    if args.save_datasets and eval_dataset is not None:
+        # LeRobot video/parquet writers must be closed explicitly. Without this
+        # eval-success harvesting can leave "Parquet magic bytes not found"
+        # files that look saved but are unusable for ACT fine-tuning.
+        eval_dataset.finalize()
 
     return all_episode_metrics
 
@@ -267,7 +324,14 @@ def eval(args: argparse.Namespace, simulation_app: Any) -> None:
             f"Available policies: {', '.join(available_policies)}"
         )
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Allow forcing policy device via POLICY_DEVICE env var (e.g., to avoid GPU OOM
+    # when running eval alongside training)
+    import os
+    _policy_device_override = os.environ.get("POLICY_DEVICE")
+    if _policy_device_override:
+        device = _policy_device_override
+    else:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
     is_bimanual = "Bi" in args.task or "bi" in args.task.lower()
 
     # Create policy instance from registry with appropriate arguments
@@ -276,12 +340,16 @@ def eval(args: argparse.Namespace, simulation_app: Any) -> None:
         "device": device,
     }
 
-    if args.policy_type == "lerobot":
-        # LeRobot policy requires policy_path and dataset_root
+    if args.policy_type in ("lerobot", "stabilized_lerobot",
+                             "act_with_collar_recovery",
+                             "act_with_vision_collar_recovery",
+                             "ai_teleop_top_short",
+                             "cem_recovery_top_short"):
+        # LeRobot-based policies require policy_path and dataset_root
         if not args.policy_path:
-            raise ValueError("--policy_path is required for lerobot policy type")
+            raise ValueError(f"--policy_path is required for {args.policy_type} policy type")
         if not args.dataset_root:
-            raise ValueError("--dataset_root is required for lerobot policy type")
+            raise ValueError(f"--dataset_root is required for {args.policy_type} policy type")
         policy_kwargs.update(
             {
                 "policy_path": args.policy_path,
@@ -290,7 +358,8 @@ def eval(args: argparse.Namespace, simulation_app: Any) -> None:
             }
         )
     else:
-        # For custom policies, pass policy_path as model_path if provided
+        # For custom policies (router, stabilized_router, portfolio_router):
+        # pass policy_path as model_path
         if args.policy_path:
             policy_kwargs["model_path"] = args.policy_path
 
@@ -323,7 +392,9 @@ def eval(args: argparse.Namespace, simulation_app: Any) -> None:
     eval_list = []  # List of (name, stage)
 
     # Evaluate a specific category based on garment_type
-    if args.garment_type == "custom":
+    if getattr(args, "eval_list_override", None):
+        eval_list_path = args.eval_list_override
+    elif args.garment_type == "custom":
         # For 'custom' type, we load from the root Release_test_list.txt
         eval_list_path = os.path.join(
             args.garment_cfg_base_path, "Release", "Release_test_list.txt"

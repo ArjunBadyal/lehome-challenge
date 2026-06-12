@@ -124,6 +124,7 @@ def save_videos_from_observations(
     episode_idx: int,
     success: torch.Tensor,
     fps: int = 30,
+    garment_name: str = None,
 ) -> None:
     """Save captured frames as MP4 videos."""
     if success.item():
@@ -133,12 +134,15 @@ def save_videos_from_observations(
 
     os.makedirs(target_dir, exist_ok=True)
 
+    # Include garment name in filename to prevent overwrites across garments
+    prefix = f"{garment_name}_" if garment_name else ""
+
     for key, frames in all_episode_frames.items():
         if len(frames) == 0:
             continue
         h, w, c = frames[0].shape
         out_path = os.path.join(
-            target_dir, f"episode{episode_idx}_{key.replace('.', '_')}.mp4"
+            target_dir, f"{prefix}episode{episode_idx}_{key.replace('.', '_')}.mp4"
         )
         writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
         for frame in frames:

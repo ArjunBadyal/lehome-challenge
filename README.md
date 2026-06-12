@@ -101,6 +101,8 @@ lerobot-train --config_path=configs/train_<policy>.yaml
 - `configs/train_dp.yaml` - DP
 - `configs/train_smolvla.yaml` - SmolVLA 
 
+For reinforcement learning, a submission-safe SAC trainer is also available for the garment-folding task. See [Training Guide](docs/training.md#4-sac-reinforcement-learning).
+
 **Key configuration options:**
 - **Dataset path**: Update `dataset.root` to point to your dataset
 - **Input/Output features**: Specify which observations and actions to use
@@ -111,7 +113,7 @@ lerobot-train --config_path=configs/train_<policy>.yaml
 
 ### 4. Eval
 
-Evaluate your trained policy on the challenge garments. The framework supports LeRobot policies and custom implementations.
+Evaluate your trained policy on the challenge garments. The framework supports LeRobot policies, the built-in SAC baseline, and custom implementations.
 
 **Examples:**
 
@@ -135,14 +137,23 @@ python -m scripts.eval \
     --num_episodes 5 \
     --enable_cameras \
     --device cpu
+
+# Evaluate a trained SAC policy
+python -m scripts.eval \
+    --policy_type sac \
+    --policy_path outputs/rl/sac/LeHome-BiSO101-Direct-Garment-SAC-v0/<run_dir>/model.zip \
+    --garment_type "top_long" \
+    --num_episodes 2 \
+    --enable_cameras \
+    --device cpu
 ```
 
 #### Common Options
 
 | Parameter | Description | Default | Required For |
 |-----------|-------------|---------|--------------|
-| `--policy_type` | Policy type: `lerobot`, `custom` | `lerobot` | All |
-| `--policy_path` | Path to model checkpoint | - | All (passed as `model_path` for custom) |
+| `--policy_type` | Policy type: `lerobot`, `sac`, `custom` | `lerobot` | All |
+| `--policy_path` | Path to model checkpoint | - | All (passed as `model_path` for `sac`/custom) |
 | `--dataset_root` | Dataset path (for metadata) | - | **LeRobot only** |
 | `--garment_type` | Type of garments: `top_long`, `top_short`, `pant_long`, `pant_short`, `custom` | `top_long` | All |
 | `--num_episodes` | Episodes per garment | `5` | All |
@@ -156,6 +167,7 @@ python -m scripts.eval \
 **Parameter Descriptions:**
 
 * **Required for LeRobot Policy**: `--policy_path` (model path) and `--dataset_root` (dataset path, used for loading metadata).
+* **SAC Policy**: `--policy_path` should point to the SB3 checkpoint, typically `outputs/rl/sac/.../model.zip`.
 * **Custom Policy**: `--policy_path` is passed to the policy constructor as `model_path`. Participants can define their own model loading logic (refer to `scripts/eval_policy/example_participant_policy.py`).
 
 

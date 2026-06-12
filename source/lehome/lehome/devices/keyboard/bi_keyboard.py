@@ -1,4 +1,5 @@
 import weakref
+import os
 import numpy as np
 
 from collections.abc import Callable
@@ -45,19 +46,24 @@ class BiKeyboard(Device):
         # store inputs
         self.sensitivity = sensitivity
 
+        self._global_keyboard = os.environ.get("LEHOME_GLOBAL_KEYBOARD", "0") == "1"
+        self._pressed_keys = set()
+
         # acquire omniverse interfaces
         self._appwindow = omni.appwindow.get_default_app_window()
         self._input = carb.input.acquire_input_interface()
         self._keyboard = self._appwindow.get_keyboard()
-        # note: Use weakref on callbacks to ensure that this object can be deleted when its destructor is called.
-        self._keyboard_sub = self._input.subscribe_to_keyboard_events(
-            self._keyboard,
-            lambda event, *args, obj=weakref.proxy(self): obj._on_keyboard_event(
-                event, *args
-            ),
-        )
+        self._keyboard_sub = None
         # bindings for keyboard to command
         self._create_key_bindings()
+        # note: Use weakref on callbacks to ensure that this object can be deleted when its destructor is called.
+        if not self._global_keyboard:
+            self._keyboard_sub = self._input.subscribe_to_keyboard_events(
+                self._keyboard,
+                lambda event, *args, obj=weakref.proxy(self): obj._on_keyboard_event(
+                    event, *args
+                ),
+            )
 
         # command buffers for left and right arms
         self._left_delta_pos = np.zeros(6)
@@ -73,8 +79,9 @@ class BiKeyboard(Device):
 
     def __del__(self):
         """Release the keyboard interface."""
-        self._input.unsubscribe_from_keyboard_events(self._keyboard, self._keyboard_sub)
-        self._keyboard_sub = None
+        if getattr(self, "_keyboard_sub", None) is not None:
+            self._input.unsubscribe_from_keyboard_events(self._keyboard, self._keyboard_sub)
+            self._keyboard_sub = None
 
     def __str__(self) -> str:
         """Returns: A string containing the information of bi-keyboard."""
@@ -97,16 +104,30 @@ class BiKeyboard(Device):
         msg += "\t  Joint 5 (wrist_roll):    9/0\n"
         msg += "\t  Joint 6 (gripper):       [/] (or Numpad +/-)\n"
         msg += "\t----------------------------------------------\n"
-        msg += "\tStart Control: B\n"
+        if self._global_keyboard:
+            msg += "\tInput mode: global terminal keyboard (no Isaac viewport focus needed)\n"
+        msg += "\tStart Control: B (auto-enabled when recording starts)\n"
         msg += "\tStart Recording: S\n"
-        msg += "\tDiscard Episode: D\n"
+        msg += "\tAssisted Recording: M manual toggle, P pause/resume policy, R resume policy\n"
+        msg += "\tACT+click-IK: C close+pause, V open+pause, Z ACT grippers\n"
+        msg += "\tVisual Repair: E landmark IK grasp/fold/release macro\n"
+        msg += "\tRestart Episode: X (reset without saving), Discard Episode: D\n"
         msg += "\tTask Success and Save: N\n"
         msg += "\tAbort Recording: ESC\n"
         msg += "\tControl+C: quit"
         return msg
 
     def on_press(self, key):
-        pass
+        key_name = self._pynput_key_name(key)
+        if not self._global_keyboard or key_name is None:
+            return
+        if key_name in self._pressed_keys:
+            return
+        self._pressed_keys.add(key_name)
+        if key_name in {"C", "V", "Z"} and key_name in self._additional_callbacks:
+            self._additional_callbacks[key_name]()
+            return
+        self._apply_key_delta(key_name, sign=1.0)
 
     def on_release(self, key):
         """
@@ -131,10 +152,23 @@ class BiKeyboard(Device):
                 # This allows continuous recording of multiple episodes without reactivating control
                 if "N" in self._additional_callbacks:
                     self._additional_callbacks["N"]()
+            else:
+                key_name = self._pynput_key_name(key)
+                if key_name in {"C", "V", "Z"}:
+                    pass
+                elif key_name in self._additional_callbacks:
+                    self._additional_callbacks[key_name]()
         except AttributeError:
             # Handle special keys (like ESC)
             if key == Key.esc and "ESCAPE" in self._additional_callbacks:
                 self._additional_callbacks["ESCAPE"]()
+        finally:
+            key_name = self._pynput_key_name(key)
+            if self._global_keyboard and key_name is not None:
+                was_pressed = key_name in self._pressed_keys
+                self._pressed_keys.discard(key_name)
+                if was_pressed:
+                    self._apply_key_delta(key_name, sign=-1.0)
 
     def get_device_state(self):
         return {
@@ -168,6 +202,8 @@ class BiKeyboard(Device):
         self._additional_callbacks[key] = func
 
     def _on_keyboard_event(self, event, *args, **kwargs):
+        if self._global_keyboard:
+            return True
         # Safely get the key name
         try:
             if isinstance(event.input, str):
@@ -190,6 +226,34 @@ class BiKeyboard(Device):
             elif key_name in self._RIGHT_KEY_MAPPING.keys():
                 self._right_delta_pos -= self._RIGHT_KEY_MAPPING[key_name]
         return True
+
+    def _pynput_key_name(self, key):
+        """Map pynput keys to the same names used by the Omniverse listener."""
+        try:
+            ch = key.char
+        except AttributeError:
+            return None
+        if not ch:
+            return None
+        if ch.isalpha():
+            return ch.upper()
+        if ch.isdigit():
+            return f"KEY_{ch}"
+        if ch == "[":
+            return "LEFT_BRACKET"
+        if ch == "]":
+            return "RIGHT_BRACKET"
+        if ch == "+":
+            return "NUMPAD_ADD"
+        if ch == "-":
+            return "NUMPAD_SUBTRACT"
+        return None
+
+    def _apply_key_delta(self, key_name: str, sign: float):
+        if key_name in self._LEFT_KEY_MAPPING:
+            self._left_delta_pos += sign * self._LEFT_KEY_MAPPING[key_name]
+        elif key_name in self._RIGHT_KEY_MAPPING:
+            self._right_delta_pos += sign * self._RIGHT_KEY_MAPPING[key_name]
 
     def _create_key_bindings(self):
         """Creates key bindings for left and right arms."""
